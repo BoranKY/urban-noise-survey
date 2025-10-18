@@ -12,7 +12,7 @@ import gzip
 from shapely.geometry import Point
 
 st.set_page_config(page_title="Urban Noise Survey", layout="wide")
-st.title("🗺 Urban Noise – Perception Survey")
+st.title("🗺️ Urban Noise – Perception Survey")
 
 # ========== CONFIG (Secrets with guard) ==========
 def require_secret(key_name: str) -> str:
@@ -21,7 +21,7 @@ def require_secret(key_name: str) -> str:
         st.error(
             f"Missing secret: {key_name}\n\n"
             "Go to: Manage app → Settings → Secrets and add:\n"
-            'APPSCRIPT_URL = "https://script.google.com/macros/s/…/exec"\n'
+            'APPSCRIPT_URL = "https://script.google.com/macros/s/.../exec"\n'
             'APPSCRIPT_TOKEN = "YOUR_SHARED_TOKEN"'
         )
         st.stop()
@@ -48,14 +48,13 @@ def load_data(path: str):
         st.stop()
 
     # 1) Git LFS pointer mı? (ilk baytlara bak)
-    # LFS pointer dosyaları düz metindir ve bu dizeyle başlar:
-    # "version https://git-lfs.github.com/spec"
+    # LFS pointer dosyaları düz metindir ve "version https://git-lfs.github.com/spec" ile başlar
     try:
         with open(path, "rb") as f:
             head = f.read(64)
         if head.startswith(b"version https://git-lfs.github.com/spec"):
             st.error(
-                "⚠ The file seems to be a Git LFS pointer, not the actual GeoJSON.\n\n"
+                "⚠️ The file seems to be a Git LFS pointer, not the actual GeoJSON.\n\n"
                 "Fix options:\n"
                 "• Commit a simplified & gzipped file under 25MB without LFS (e.g., roads_wgs.geojson.gz), or\n"
                 "• Host the file externally (Google Drive / GitHub Release) and download at runtime."
@@ -92,11 +91,41 @@ def load_data(path: str):
     return gdf
 
 
-# >>> Burada dosya yolunu kendi yüklediğin formata göre ayarla <<<
+# >>> KENDİ DOSYA YOLUNA GÖRE BUNU KULLAN <<<
 # Eğer repoya .gz yüklediysen:
 df = load_data("data/roads_wgs.geojson.gz")
 # Eğer ham .geojson yüklediysen (üst satırı yorumlayıp bunu aç):
 # df = load_data("data/roads_wgs.geojson")
+
+
+# ========== GDF TEMİZLİĞİ / STERİLİZASYON ==========
+# 1) geometri yoksa / boşsa at
+df = df[df.geometry.notna()].copy()
+if "is_empty" in dir(df.geometry):
+    df = df[~df.geometry.is_empty].copy()
+
+# 2) yalnızca çizgisel geometriler kalsın
+df = df[df.geometry.geom_type.isin(["LineString", "MultiLineString"])].copy()
+
+# 3) MultiLineString'leri satırlara böl
+df = df.explode(index_parts=False, ignore_index=True)
+
+# 4) disturbance sayıya dönsün ve NaN'leri güvenli bir değere çekelim
+df["disturbance"] = pd.to_numeric(df["disturbance"], errors="coerce").fillna(0.0).clip(0, 1)
+
+# 5) linguistic label yoksa üret
+if "disturbance_label" not in df.columns:
+    bins = [0, 0.33, 0.66, 1]
+    df["disturbance_label"] = pd.cut(
+        df["disturbance"], bins=bins,
+        labels=["Low", "Medium", "High"],
+        include_lowest=True
+    )
+
+# 6) Haritaya basmadan önce temel kontrol
+if len(df) == 0:
+    st.error("No line features to display after cleaning. Check your input data.")
+    st.stop()
 
 
 # ========== MAP ==========
@@ -105,6 +134,7 @@ center = [
     df.geometry.representative_point().x.mean()
 ]
 m = folium.Map(location=center, zoom_start=13, tiles="cartodbpositron")
+
 cmap = cm.LinearColormap(['green', 'yellow', 'orange', 'red'], vmin=0, vmax=1)
 cmap.caption = "Disturbance Score (0–1)"
 
@@ -112,8 +142,7 @@ folium.GeoJson(
     df,
     style_function=lambda f: {
         "color": cmap(float(f["properties"].get("disturbance", 0))),
-        "weight": 3,
-        "opacity": 1.0
+        "weight": 3, "opacity": 1.0
     },
     highlight_function=lambda f: {"weight": 6},
     tooltip=folium.GeoJsonTooltip(
@@ -129,6 +158,7 @@ out = st_folium(m, height=600, use_container_width=True, returned_objects=["last
 
 # ========== SELECTION ==========
 selected = None
+lat = lon = None
 if out and out.get("last_object_clicked"):
     lat = float(out["last_object_clicked"]["lat"])
     lon = float(out["last_object_clicked"]["lng"])
@@ -144,7 +174,7 @@ if selected is not None:
     pred_score = float(selected.get('disturbance', 0.0))
     highway = str(selected.get('highway', ''))
 
-    st.write(f"*Road:* {highway}  |  *Model prediction:* {pred_label} (score={pred_score:.2f})")
+    st.write(f"**Road:** {highway}  |  **Model prediction:** {pred_label} (score={pred_score:.2f})")
 
     agree = st.radio("Do you agree with the prediction?", ["Yes", "No"], horizontal=True)
     rating = st.slider("Your perception (1 = very quiet, 5 = very noisy)", 1, 5, 3)
