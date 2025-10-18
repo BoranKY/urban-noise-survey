@@ -1,21 +1,26 @@
-import streamlit as st
-import geopandas as gpd
-import pandas as pd
-import folium
-from streamlit_folium import st_folium
-import branca.colormap as cm
-from datetime import datetime
-import requests
 import os
 import json
 import gzip
-from shapely.geometry import Point, mapping
+import requests
 import numpy as np
+import pandas as pd
+import geopandas as gpd
+import streamlit as st
+import folium
+from shapely.geometry import Point, mapping
+from streamlit_folium import st_folium
+import branca.colormap as cm
+from datetime import datetime
+
+# (Opsiyonel) Streamlit Cloud'da inotify limit uyarısını bastır
+st.set_option("server.fileWatcherType", "none")
 
 st.set_page_config(page_title="Urban Noise Survey", layout="wide")
-st.title("🗺 Urban Noise – Perception Survey")
+st.title("🗺️ Urban Noise – Perception Survey")
 
-# ========== CONFIG (Secrets with guard) ==========
+# =========================
+# Secrets guard
+# =========================
 def require_secret(key_name: str) -> str:
     val = st.secrets.get(key_name)
     if not val:
@@ -31,11 +36,12 @@ def require_secret(key_name: str) -> str:
 APPSCRIPT_URL = require_secret("APPSCRIPT_URL")
 APPSCRIPT_TOKEN = require_secret("APPSCRIPT_TOKEN")
 
-
-# ========== DATA LOADING (robust .geojson + .geojson.gz) ==========
+# =========================
+# Data loader (robust .geojson + .geojson.gz)
+# =========================
 @st.cache_data
-def load_data(path: str):
-    # 0) Dosya gerçekten var mı?
+def load_data(path: str) -> gpd.GeoDataFrame:
+    # 0) Exists?
     if not os.path.exists(path):
         try:
             listing = os.listdir("data")
@@ -48,13 +54,13 @@ def load_data(path: str):
         )
         st.stop()
 
-    # 1) Git LFS pointer mı? (ilk baytlara bak)
+    # 1) LFS pointer check
     try:
         with open(path, "rb") as f:
             head = f.read(64)
         if head.startswith(b"version https://git-lfs.github.com/spec"):
             st.error(
-                "⚠ The file seems to be a Git LFS pointer, not the actual GeoJSON.\n\n"
+                "⚠️ The file seems to be a Git LFS pointer, not the actual GeoJSON.\n\n"
                 "Fix options:\n"
                 "• Commit a simplified & gzipped file under 25MB without LFS (e.g., roads_wgs.geojson.gz), or\n"
                 "• Host the file externally (Drive / GitHub Release) and download at runtime."
@@ -63,7 +69,7 @@ def load_data(path: str):
     except Exception:
         pass
 
-    # 2) Okuma: .gz ise manuel gzip aç; değilse read_file
+    # 2) Read
     try:
         if path.endswith(".geojson.gz"):
             with gzip.open(path, "rt", encoding="utf-8") as f:
@@ -79,39 +85,40 @@ def load_data(path: str):
         st.error(f"❌ Failed to read geo data: {path}\n\n{e}")
         st.stop()
 
-    # 3) Disturbance & label
+    # 3) Disturbance + label
     gdf["disturbance"] = pd.to_numeric(gdf.get("disturbance"), errors="coerce")
     if "disturbance_label" not in gdf.columns:
         bins = [0, 0.33, 0.66, 1]
         gdf["disturbance_label"] = pd.cut(
             gdf["disturbance"], bins=bins,
-            labels=["Low", "Medium", "High"], include_lowest=True
+            labels=["Low", "Medium", "High"],
+            include_lowest=True
         )
     return gdf
 
-
-# >>> Dosya yolunu kendi yüklediğin formata göre ayarla <<<
-df = load_data("data/roads_wgs.geojson.gz")
-# Eğer ham .geojson yüklediysen:
+# >>> set your file path here (use .gz if you committed gzipped)
+DF_PATH = "data/roads_wgs.geojson.gz"
+df = load_data(DF_PATH)
+# If you committed plain GeoJSON:
 # df = load_data("data/roads_wgs.geojson")
 
-
-# ========== GDF TEMİZLİĞİ ==========
-# 1) geometri yoksa / boşsa at
+# =========================
+# Clean geometries
+# =========================
 df = df[df.geometry.notna()].copy()
 if hasattr(df.geometry, "is_empty"):
     df = df[~df.geometry.is_empty].copy()
 
-# 2) yalnızca çizgisel geometriler kalsın
+# Keep only linear features
 df = df[df.geometry.geom_type.isin(["LineString", "MultiLineString"])].copy()
 
-# 3) MultiLineString'leri satırlara böl
+# Explode multilines
 df = df.explode(index_parts=False, ignore_index=True)
 
-# 4) disturbance: numeric & 0..1
+# Disturbance → numeric [0,1]
 df["disturbance"] = pd.to_numeric(df["disturbance"], errors="coerce").fillna(0.0).clip(0, 1)
 
-# 5) label yoksa üret (koruma amaçlı)
+# Label fallback
 if "disturbance_label" not in df.columns:
     bins = [0, 0.33, 0.66, 1]
     df["disturbance_label"] = pd.cut(
@@ -124,22 +131,46 @@ if len(df) == 0:
     st.error("No line features to display after cleaning. Check your input data.")
     st.stop()
 
-
-# ========== GeoJSON'u manuel üret (NumPy 2.x uyumlu yol) ==========
+# =========================
+# Build GeoJSON manually (NumPy 2.x-safe)
+# =========================
 def to_py(obj):
-    """JSON-serializable primitive (numpy → python)"""
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if pd.isna(obj):
-        return None
+    """JSON-serializable primitive converter for GeoJSON properties."""
+    # numpy scalar → python scalar
+    if isinstance(obj, np.generic):
+        obj = obj.item()
+
+    # datetime types → ISO
+    if isinstance(obj, (pd.Timestamp, datetime)):
+        return obj.isoformat()
+
+    # pandas interval, etc. → string
+    if isinstance(obj, (pd.Interval,)):
+        return str(obj)
+
+    # arrays/lists → recursive
+    if isinstance(obj, (list, tuple, np.ndarray)):
+        return [to_py(x) for x in obj]
+
+    # NaN/NA safe check
+    try:
+        if pd.isna(obj):
+            return None
+    except Exception:
+        pass
+
+    # objects with tolist (e.g., pandas scalar types)
+    if hasattr(obj, "tolist") and not isinstance(obj, (str, bytes)):
+        try:
+            return obj.tolist()
+        except Exception:
+            pass
+
     return obj
 
 def build_geojson(gdf: gpd.GeoDataFrame) -> dict:
     props_cols = [c for c in gdf.columns if c != gdf.geometry.name]
     features = []
-    # iterrows → güvenli (GeoPandas to_json yolunu kullanmıyoruz)
     for _, row in gdf.iterrows():
         geom = row.geometry
         if geom is None:
@@ -154,8 +185,9 @@ def build_geojson(gdf: gpd.GeoDataFrame) -> dict:
 
 geojson_data = build_geojson(df)
 
-
-# ========== MAP ==========
+# =========================
+# Map
+# =========================
 center = [
     df.geometry.representative_point().y.mean(),
     df.geometry.representative_point().x.mean()
@@ -169,7 +201,8 @@ folium.GeoJson(
     geojson_data,
     style_function=lambda f: {
         "color": cmap(float(f["properties"].get("disturbance", 0))),
-        "weight": 3, "opacity": 1.0
+        "weight": 3,
+        "opacity": 1.0
     },
     highlight_function=lambda f: {"weight": 6},
     tooltip=folium.GeoJsonTooltip(
@@ -183,7 +216,9 @@ cmap.add_to(m)
 st.caption("Click a road segment to evaluate its perceived noise.")
 out = st_folium(m, height=600, use_container_width=True, returned_objects=["last_object_clicked"])
 
-# ========== SELECTION ==========
+# =========================
+# Selection (nearest segment to click)
+# =========================
 selected = None
 lat = lon = None
 if out and out.get("last_object_clicked"):
@@ -193,14 +228,16 @@ if out and out.get("last_object_clicked"):
     idx = df.distance(clicked_pt.iloc[0]).sort_values().index[0]
     selected = df.loc[idx]
 
-# ========== SURVEY FORM ==========
+# =========================
+# Survey form
+# =========================
 if selected is not None:
     st.subheader("Evaluate this segment")
     pred_label = str(selected.get('disturbance_label', ''))
     pred_score = float(selected.get('disturbance', 0.0))
     highway = str(selected.get('highway', ''))
 
-    st.write(f"*Road:* {highway}  |  *Model prediction:* {pred_label} (score={pred_score:.2f})")
+    st.write(f"**Road:** {highway}  |  **Model prediction:** {pred_label} (score={pred_score:.2f})")
 
     agree = st.radio("Do you agree with the prediction?", ["Yes", "No"], horizontal=True)
     rating = st.slider("Your perception (1 = very quiet, 5 = very noisy)", 1, 5, 3)
