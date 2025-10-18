@@ -29,7 +29,7 @@ def load_data(path):
         )
     return gdf
 
-df = load_data("data/roads_wgs.geojson")   # veya .geojson.gz
+df = load_data("data/roads_wgs.geojson.gz")   # veya .geojson.gz
 
 # ========== MAP ==========
 center = [df.geometry.representative_point().y.mean(),
