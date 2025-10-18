@@ -12,7 +12,7 @@ import gzip
 from shapely.geometry import Point
 
 st.set_page_config(page_title="Urban Noise Survey", layout="wide")
-st.title("🗺️ Urban Noise – Perception Survey")
+st.title("🗺 Urban Noise – Perception Survey")
 
 # ========== CONFIG (Secrets with guard) ==========
 def require_secret(key_name: str) -> str:
@@ -27,8 +27,8 @@ def require_secret(key_name: str) -> str:
         st.stop()
     return val
 
-APPSCRIPT_URL = require_secret("APPSCRIPT_URL")      # "https://script.google.com/macros/s/XXX/exec"
-APPSCRIPT_TOKEN = require_secret("APPSCRIPT_TOKEN")  # "YOUR_SHARED_TOKEN"
+APPSCRIPT_URL = require_secret("APPSCRIPT_URL")
+APPSCRIPT_TOKEN = require_secret("APPSCRIPT_TOKEN")
 
 
 # ========== DATA LOADING (robust .geojson + .geojson.gz) ==========
@@ -48,28 +48,26 @@ def load_data(path: str):
         st.stop()
 
     # 1) Git LFS pointer mı? (ilk baytlara bak)
-    # LFS pointer dosyaları düz metindir ve "version https://git-lfs.github.com/spec" ile başlar
     try:
         with open(path, "rb") as f:
             head = f.read(64)
         if head.startswith(b"version https://git-lfs.github.com/spec"):
             st.error(
-                "⚠️ The file seems to be a Git LFS pointer, not the actual GeoJSON.\n\n"
+                "⚠ The file seems to be a Git LFS pointer, not the actual GeoJSON.\n\n"
                 "Fix options:\n"
                 "• Commit a simplified & gzipped file under 25MB without LFS (e.g., roads_wgs.geojson.gz), or\n"
-                "• Host the file externally (Google Drive / GitHub Release) and download at runtime."
+                "• Host the file externally (Drive / GitHub Release) and download at runtime."
             )
             st.stop()
     except Exception:
         pass
 
-    # 2) Okuma: .gz ise manuel gzip aç; değilse read_file
+    # 2) Okuma: .gz ise manuel aç; değilse read_file
     try:
         if path.endswith(".geojson.gz"):
             with gzip.open(path, "rt", encoding="utf-8") as f:
                 data = json.load(f)
             gdf = gpd.GeoDataFrame.from_features(data["features"])
-            # CRS ayarı
             if gdf.crs is None:
                 gdf.set_crs(4326, inplace=True)
             else:
@@ -80,7 +78,7 @@ def load_data(path: str):
         st.error(f"❌ Failed to read geo data: {path}\n\n{e}")
         st.stop()
 
-    # 3) Disturbance & linguistic label
+    # 3) Disturbance & label
     gdf["disturbance"] = pd.to_numeric(gdf.get("disturbance"), errors="coerce")
     if "disturbance_label" not in gdf.columns:
         bins = [0, 0.33, 0.66, 1]
@@ -91,17 +89,16 @@ def load_data(path: str):
     return gdf
 
 
-# >>> KENDİ DOSYA YOLUNA GÖRE BUNU KULLAN <<<
-# Eğer repoya .gz yüklediysen:
+# >>> Dosya yolunu kendi yüklediğin formata göre ayarla <<<
 df = load_data("data/roads_wgs.geojson.gz")
-# Eğer ham .geojson yüklediysen (üst satırı yorumlayıp bunu aç):
+# Eğer ham .geojson yüklediysen:
 # df = load_data("data/roads_wgs.geojson")
 
 
-# ========== GDF TEMİZLİĞİ / STERİLİZASYON ==========
+# ========== GDF TEMİZLİĞİ ==========
 # 1) geometri yoksa / boşsa at
 df = df[df.geometry.notna()].copy()
-if "is_empty" in dir(df.geometry):
+if hasattr(df.geometry, "is_empty"):
     df = df[~df.geometry.is_empty].copy()
 
 # 2) yalnızca çizgisel geometriler kalsın
@@ -110,10 +107,10 @@ df = df[df.geometry.geom_type.isin(["LineString", "MultiLineString"])].copy()
 # 3) MultiLineString'leri satırlara böl
 df = df.explode(index_parts=False, ignore_index=True)
 
-# 4) disturbance sayıya dönsün ve NaN'leri güvenli bir değere çekelim
+# 4) disturbance: numeric & 0..1
 df["disturbance"] = pd.to_numeric(df["disturbance"], errors="coerce").fillna(0.0).clip(0, 1)
 
-# 5) linguistic label yoksa üret
+# 5) label yoksa üret (koruma amaçlı)
 if "disturbance_label" not in df.columns:
     bins = [0, 0.33, 0.66, 1]
     df["disturbance_label"] = pd.cut(
@@ -122,7 +119,6 @@ if "disturbance_label" not in df.columns:
         include_lowest=True
     )
 
-# 6) Haritaya basmadan önce temel kontrol
 if len(df) == 0:
     st.error("No line features to display after cleaning. Check your input data.")
     st.stop()
@@ -138,8 +134,11 @@ m = folium.Map(location=center, zoom_start=13, tiles="cartodbpositron")
 cmap = cm.LinearColormap(['green', 'yellow', 'orange', 'red'], vmin=0, vmax=1)
 cmap.caption = "Disturbance Score (0–1)"
 
+# 🔧 GeoPandas → dict (NumPy 2.x ile güvenli yol)
+geojson_data = json.loads(df.to_json())
+
 folium.GeoJson(
-    df,
+    geojson_data,
     style_function=lambda f: {
         "color": cmap(float(f["properties"].get("disturbance", 0))),
         "weight": 3, "opacity": 1.0
@@ -163,7 +162,6 @@ if out and out.get("last_object_clicked"):
     lat = float(out["last_object_clicked"]["lat"])
     lon = float(out["last_object_clicked"]["lng"])
     clicked_pt = gpd.GeoSeries([Point(lon, lat)], crs=4326).to_crs(df.crs)
-    # En yakın segment
     idx = df.distance(clicked_pt.iloc[0]).sort_values().index[0]
     selected = df.loc[idx]
 
@@ -174,7 +172,7 @@ if selected is not None:
     pred_score = float(selected.get('disturbance', 0.0))
     highway = str(selected.get('highway', ''))
 
-    st.write(f"**Road:** {highway}  |  **Model prediction:** {pred_label} (score={pred_score:.2f})")
+    st.write(f"*Road:* {highway}  |  *Model prediction:* {pred_label} (score={pred_score:.2f})")
 
     agree = st.radio("Do you agree with the prediction?", ["Yes", "No"], horizontal=True)
     rating = st.slider("Your perception (1 = very quiet, 5 = very noisy)", 1, 5, 3)
@@ -200,12 +198,11 @@ if selected is not None:
         try:
             r = requests.post(
                 APPSCRIPT_URL,
-                params={"token": APPSCRIPT_TOKEN},  # basit doğrulama
+                params={"token": APPSCRIPT_TOKEN},
                 json=payload,
                 timeout=10
             )
             if r.ok:
-                # Apps Script JSON döndürmeli: {"status":"ok"}
                 try:
                     resp = r.json()
                 except Exception:
