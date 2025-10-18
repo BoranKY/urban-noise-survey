@@ -9,7 +9,8 @@ import requests
 import os
 import json
 import gzip
-from shapely.geometry import Point
+from shapely.geometry import Point, mapping
+import numpy as np
 
 st.set_page_config(page_title="Urban Noise Survey", layout="wide")
 st.title("🗺 Urban Noise – Perception Survey")
@@ -62,7 +63,7 @@ def load_data(path: str):
     except Exception:
         pass
 
-    # 2) Okuma: .gz ise manuel aç; değilse read_file
+    # 2) Okuma: .gz ise manuel gzip aç; değilse read_file
     try:
         if path.endswith(".geojson.gz"):
             with gzip.open(path, "rt", encoding="utf-8") as f:
@@ -124,6 +125,36 @@ if len(df) == 0:
     st.stop()
 
 
+# ========== GeoJSON'u manuel üret (NumPy 2.x uyumlu yol) ==========
+def to_py(obj):
+    """JSON-serializable primitive (numpy → python)"""
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if pd.isna(obj):
+        return None
+    return obj
+
+def build_geojson(gdf: gpd.GeoDataFrame) -> dict:
+    props_cols = [c for c in gdf.columns if c != gdf.geometry.name]
+    features = []
+    # iterrows → güvenli (GeoPandas to_json yolunu kullanmıyoruz)
+    for _, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None:
+            continue
+        feat = {
+            "type": "Feature",
+            "geometry": mapping(geom),
+            "properties": {col: to_py(row[col]) for col in props_cols}
+        }
+        features.append(feat)
+    return {"type": "FeatureCollection", "features": features}
+
+geojson_data = build_geojson(df)
+
+
 # ========== MAP ==========
 center = [
     df.geometry.representative_point().y.mean(),
@@ -133,9 +164,6 @@ m = folium.Map(location=center, zoom_start=13, tiles="cartodbpositron")
 
 cmap = cm.LinearColormap(['green', 'yellow', 'orange', 'red'], vmin=0, vmax=1)
 cmap.caption = "Disturbance Score (0–1)"
-
-# 🔧 GeoPandas → dict (NumPy 2.x ile güvenli yol)
-geojson_data = json.loads(df.to_json())
 
 folium.GeoJson(
     geojson_data,
