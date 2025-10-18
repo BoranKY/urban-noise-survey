@@ -12,9 +12,6 @@ from streamlit_folium import st_folium
 import branca.colormap as cm
 from datetime import datetime
 
-# (Opsiyonel) Streamlit Cloud'da inotify limit uyarısını bastır
-st.set_option("server.fileWatcherType", "none")
-
 st.set_page_config(page_title="Urban Noise Survey", layout="wide")
 st.title("🗺️ Urban Noise – Perception Survey")
 
