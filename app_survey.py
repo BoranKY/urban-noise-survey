@@ -226,7 +226,7 @@ if out and out.get("last_object_clicked"):
     selected = df.loc[idx]
 
 # =========================
-# Survey form (with 30s timeout + spinner + FR/EN normalize)
+# Survey form
 # =========================
 if selected is not None:
     st.subheader("Evaluate this segment")
@@ -244,15 +244,12 @@ if selected is not None:
         user_lon = st.text_input("Longitude", "")
 
     if st.button("Submit"):
-        # FR/EN normalize (in case someone types Oui/Non)
-        agree_norm = {"Yes": "Yes", "No": "No", "Oui": "Yes", "Non": "No"}.get(agree, str(agree))
-
         payload = {
             "osmid": str(selected.get("osmid", "")),
             "highway": highway,
             "pred_label": pred_label,
             "pred_score": pred_score,
-            "agree": agree_norm,
+            "agree": agree,
             "rating_1to5": int(rating),
             "comment": comment,
             "click_lat": float(lat),
@@ -260,31 +257,25 @@ if selected is not None:
             "user_lat": user_lat,
             "user_lon": user_lon
         }
-
-        with st.spinner("Saving..."):
-            try:
-                r = requests.post(
-                    APPSCRIPT_URL,
-                    params={"token": APPSCRIPT_TOKEN},
-                    json=payload,
-                    timeout=30  # <-- artırılmış süre
-                )
-            except Exception as e:
-                st.error(f"Connection error: {e}")
-            else:
-                if r.ok:
-                    try:
-                        resp = r.json()
-                    except Exception:
-                        resp = {"status": "?", "raw": r.text[:200]}
-                    if resp.get("status") == "ok":
-                        st.success("✅ Thanks! Your response has been saved.")
-                        # İsterseniz kanıt bilgisi (Apps Script'ten dönerse) gösterebilirsiniz:
-                        if resp.get("sheetName") and resp.get("wroteRow"):
-                            st.caption(f"Sheet: {resp['sheetName']} • Row: {resp['wroteRow']}")
-                    else:
-                        st.error(f"Save failed: {resp}")
+        try:
+            r = requests.post(
+                APPSCRIPT_URL,
+                params={"token": APPSCRIPT_TOKEN},
+                json=payload,
+                timeout=10
+            )
+            if r.ok:
+                try:
+                    resp = r.json()
+                except Exception:
+                    resp = {"status": "?", "raw": r.text[:200]}
+                if resp.get("status") == "ok":
+                    st.success("✅ Thanks! Your response has been saved.")
                 else:
-                    st.error(f"HTTP {r.status_code}: {r.text[:200]}")
+                    st.error(f"Save failed: {resp}")
+            else:
+                st.error(f"HTTP {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            st.error(f"Connection error: {e}")
 else:
     st.info("Click on the map to select a segment.")
