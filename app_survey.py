@@ -6,9 +6,10 @@ from streamlit_folium import st_folium
 import branca.colormap as cm
 from datetime import datetime
 
+# =========================
+# Page & language
+# =========================
 st.set_page_config(page_title="Urban Noise Survey", layout="wide")
-
-# ---------- language toggle (simple) ----------
 LANG = st.radio("Language / Langue", ["English", "Français"], horizontal=True)
 
 T = {
@@ -65,7 +66,9 @@ T = {
 st.title(T["title"])
 st.write(T["intro"])
 
-# ---------- secrets ----------
+# =========================
+# Secrets (Apps Script)
+# =========================
 def require_secret(k: str) -> str:
     v = st.secrets.get(k)
     if not v:
@@ -75,7 +78,9 @@ def require_secret(k: str) -> str:
 APPSCRIPT_URL   = require_secret("APPSCRIPT_URL")
 APPSCRIPT_TOKEN = require_secret("APPSCRIPT_TOKEN")
 
-# ---------- data loader ----------
+# =========================
+# Data loader (.geojson or .geojson.gz)
+# =========================
 @st.cache_data
 def load_data(path: str) -> gpd.GeoDataFrame:
     if not os.path.exists(path):
@@ -111,7 +116,9 @@ def load_data(path: str) -> gpd.GeoDataFrame:
 DF_PATH = "data/roads_wgs.geojson.gz"
 df = load_data(DF_PATH)
 
-# ---------- clean ----------
+# =========================
+# Clean geometries
+# =========================
 df = df[df.geometry.notna()].copy()
 if hasattr(df.geometry, "is_empty"):
     df = df[~df.geometry.is_empty]
@@ -119,7 +126,9 @@ df = df[df.geometry.geom_type.isin(["LineString","MultiLineString"])].explode(in
 if df.empty:
     st.error(T["no_lines"]); st.stop()
 
-# ---------- helpers ----------
+# =========================
+# Helpers
+# =========================
 def to_py(o):
     if hasattr(o, "item"):
         try: o = o.item()
@@ -141,11 +150,12 @@ def build_geojson(gdf: gpd.GeoDataFrame) -> dict:
                       "properties":{c: to_py(r[c]) for c in props}})
     return {"type":"FeatureCollection","features":feats}
 
-# ---------- remember last click ----------
+# =========================
+# Selection memory (for clear highlight)
+# =========================
 if "last_click" not in st.session_state:
     st.session_state.last_click = None
 
-# ---------- pick selected from stored click ----------
 selected = None; sel_lat = sel_lon = None
 if st.session_state.last_click:
     sel_lat, sel_lon = st.session_state.last_click
@@ -153,27 +163,32 @@ if st.session_state.last_click:
     idx = df.distance(clicked_pt.iloc[0]).sort_values().index[0]
     selected = df.loc[idx]
 
-# ---------- map (pastel palette + lower opacity) ----------
-# Pastel ramp (softer): light green → light orange → light red
-PASTEL_RAMP = ['#bfe7bf', '#ffe0b2', '#fb9a99']  # soft colors
+# =========================
+# Map (vivid lines, semi-transparent)
+# =========================
+# More vivid ramp but not neon: green → yellow → orange → red
+VIVID_RAMP = ['#00b050', '#ffff00', '#ff9900', '#ff0000']
+
 vals = df["disturbance"].astype(float).clip(0,1)
 q = np.quantile(vals, [0, .2, .4, .6, .8, 1])
 def scaler(v): return (np.searchsorted(q, v, side="right")-1)/5
-cmap = cm.LinearColormap(PASTEL_RAMP, vmin=0, vmax=1)
+
+cmap = cm.LinearColormap(VIVID_RAMP, vmin=0, vmax=1)
 cmap.caption = T["legend"]
 
 center = [df.geometry.representative_point().y.mean(),
           df.geometry.representative_point().x.mean()]
-# Positron already label-friendly
-m = folium.Map(location=center, zoom_start=13, tiles="cartodbpositron")
 
-# Base layer: thinner & semi-transparent lines
+# Slightly more colorful base than Positron
+m = folium.Map(location=center, zoom_start=13, tiles="CartoDB Voyager")
+
+# Base colored lines — visible but see-through
 folium.GeoJson(
     build_geojson(df),
     style_function=lambda f: {
         "color": cmap(float(scaler(float(f["properties"].get("disturbance",0))))),
-        "weight": 4,            # thinner
-        "opacity": 0.6          # lighter → basemap labels visible
+        "weight": 5,
+        "opacity": 0.75
     },
     tooltip=folium.GeoJsonTooltip(
         fields=["highway","disturbance_label","disturbance"],
@@ -187,22 +202,25 @@ cmap.add_to(m)
 if selected is not None:
     folium.GeoJson(
         build_geojson(selected.to_frame().T),
-        style_function=lambda f: {"color":"#000000", "weight":7, "opacity":0.9},
+        style_function=lambda f: {"color":"#000000", "weight":7, "opacity":1.0},
         name="Selected"
     ).add_to(m)
     folium.CircleMarker(location=[sel_lat, sel_lon], radius=5, color="#000000",
                         fill=True, fill_opacity=1).add_to(m)
 
+# Render & capture click
 out = st_folium(m, height=600, use_container_width=True, returned_objects=["last_object_clicked"])
 
-# New click → store & rerun
+# New click → store & rerun to refresh highlight
 if out and out.get("last_object_clicked"):
     lat = float(out["last_object_clicked"]["lat"])
     lon = float(out["last_object_clicked"]["lng"])
     st.session_state.last_click = (lat, lon)
     st.rerun()
 
-# ---------- form ----------
+# =========================
+# Survey form & submit
+# =========================
 if selected is not None:
     st.subheader(T["selected_sub"])
     pred_label = str(selected.get("disturbance_label",""))
@@ -219,12 +237,17 @@ if selected is not None:
         user_lon = st.text_input(T["lon"], "")
 
     if st.button(T["submit"]):
+        # Normalize FR Yes/No to English for consistent Sheets values
+        agree_norm = agree
+        if LANG == "Français":
+            agree_norm = "Yes" if agree == "Oui" else "No"
+
         payload = {
             "osmid": str(selected.get("osmid","")),
             "highway": highway,
             "pred_label": pred_label,
             "pred_score": pred_score,
-            "agree": agree if LANG=="English" else ("Yes" if agree=="Oui" else "No"),
+            "agree": agree_norm,
             "rating_1to5": int(rating),
             "comment": comment,
             "click_lat": float(sel_lat),
