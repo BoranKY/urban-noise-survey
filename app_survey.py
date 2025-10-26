@@ -1,7 +1,6 @@
 import os
 import json
 import gzip
-import uuid
 import requests
 import numpy as np
 import pandas as pd
@@ -14,80 +13,7 @@ import branca.colormap as cm
 from datetime import datetime
 
 st.set_page_config(page_title="Urban Noise Survey", layout="wide")
-
-# =========================
-# Language (EN / FR)
-# =========================
-LANG = st.radio("Language / Langue", ["English", "Français"], horizontal=True)
-
-T = {
-    "English": {
-        "title": "🗺️ Urban Noise – Perception Survey",
-        "caption": "Click a road segment to evaluate its perceived noise.",
-        "legend": "Disturbance Score (0–1)",
-        "no_lines": "No line features to display after cleaning. Check your input data.",
-        "click_info": "Click on the map to select a segment.",
-        "subheader": "Evaluate this segment",
-        "road_model": "**Road:** {road}  |  **Model prediction:** {label} (score={score:.2f})",
-        "agree_q": "Do you agree with the prediction?",
-        "agree_opts": ["Yes", "No"],
-        "rating_q": "Your perception (1 = very quiet, 5 = very noisy)",
-        "comment_q": "Optional comment (traffic, construction, etc.)",
-        "gps_exp": "Optional: share your GPS coordinates",
-        "lat": "Latitude",
-        "lon": "Longitude",
-        "submit": "Submit",
-        "thanks_sheet": "✅ Saved to Google Sheet and local backup.",
-        "thanks_local": "✅ Saved to local backup. (Sheet save failed/slow)",
-        "save_failed": "Save failed",
-        "http_err": "HTTP {code}: {text}",
-        "conn_err": "Connection error: {e}",
-        "missing_secret": (
-            "Missing secret: {k}\n\n"
-            "Go to: Manage app → Settings → Secrets and add:\n"
-            'APPSCRIPT_URL = "https://script.google.com/macros/s/.../exec"\n'
-            'APPSCRIPT_TOKEN = "YOUR_SHARED_TOKEN"'
-        ),
-        "data_not_found": "Data file not found: {path}\n\nAvailable in ./data: {listing}\n",
-        "backup_title": "Responses (local backup)",
-        "backup_empty": "No local backup yet. Submit a response to see it here.",
-        "download_csv": "⬇️ Download CSV (backup)",
-    },
-    "Français": {
-        "title": "🗺️ Bruit urbain – Enquête de perception",
-        "caption": "Cliquez sur un tronçon de route pour évaluer le bruit perçu.",
-        "legend": "Indice de nuisance (0–1)",
-        "no_lines": "Aucun tronçon à afficher après nettoyage. Vérifiez vos données.",
-        "click_info": "Cliquez sur la carte pour sélectionner un tronçon.",
-        "subheader": "Évaluer ce tronçon",
-        "road_model": "**Route :** {road}  |  **Prédiction du modèle :** {label} (score={score:.2f})",
-        "agree_q": "Êtes-vous d’accord avec la prédiction ?",
-        "agree_opts": ["Oui", "Non"],
-        "rating_q": "Votre perception (1 = très calme, 5 = très bruyant)",
-        "comment_q": "Commentaire facultatif (trafic, travaux, etc.)",
-        "gps_exp": "Facultatif : partager vos coordonnées GPS",
-        "lat": "Latitude",
-        "lon": "Longitude",
-        "submit": "Envoyer",
-        "thanks_sheet": "✅ Enregistré dans Google Sheet et la sauvegarde locale.",
-        "thanks_local": "✅ Enregistré dans la sauvegarde locale. (Échec/lenteur côté Sheet)",
-        "save_failed": "Échec de l’enregistrement",
-        "http_err": "HTTP {code} : {text}",
-        "conn_err": "Erreur de connexion : {e}",
-        "missing_secret": (
-            "Secret manquant : {k}\n\n"
-            "Allez dans : Manage app → Settings → Secrets et ajoutez :\n"
-            'APPSCRIPT_URL = "https://script.google.com/macros/s/.../exec"\n'
-            'APPSCRIPT_TOKEN = "YOUR_SHARED_TOKEN"'
-        ),
-        "data_not_found": "Fichier introuvable : {path}\n\nPrésents dans ./data : {listing}\n",
-        "backup_title": "Réponses (sauvegarde locale)",
-        "backup_empty": "Aucune sauvegarde locale pour l’instant. Envoyez une réponse pour l’afficher ici.",
-        "download_csv": "⬇️ Télécharger le CSV (sauvegarde)",
-    }
-}[LANG]
-
-st.title(T["title"])
+st.title("🗺️ Urban Noise – Perception Survey")
 
 # =========================
 # Secrets guard
@@ -95,7 +21,12 @@ st.title(T["title"])
 def require_secret(key_name: str) -> str:
     val = st.secrets.get(key_name)
     if not val:
-        st.error(T["missing_secret"].format(k=key_name))
+        st.error(
+            f"Missing secret: {key_name}\n\n"
+            "Go to: Manage app → Settings → Secrets and add:\n"
+            'APPSCRIPT_URL = "https://script.google.com/macros/s/.../exec"\n'
+            'APPSCRIPT_TOKEN = "YOUR_SHARED_TOKEN"'
+        )
         st.stop()
     return val
 
@@ -113,7 +44,11 @@ def load_data(path: str) -> gpd.GeoDataFrame:
             listing = os.listdir("data")
         except Exception:
             listing = []
-        st.error(T["data_not_found"].format(path=path, listing=listing))
+        st.error(
+            f"Data file not found: {path}\n\n"
+            f"Available in ./data: {listing}\n"
+            f"Tip: If you committed roads_wgs.geojson.gz, call load_data('data/roads_wgs.geojson.gz')."
+        )
         st.stop()
 
     # 1) LFS pointer check
@@ -190,7 +125,7 @@ if "disturbance_label" not in df.columns:
     )
 
 if len(df) == 0:
-    st.error(T["no_lines"])
+    st.error("No line features to display after cleaning. Check your input data.")
     st.stop()
 
 # =========================
@@ -248,7 +183,7 @@ def build_geojson(gdf: gpd.GeoDataFrame) -> dict:
 geojson_data = build_geojson(df)
 
 # =========================
-# Map (original colors)
+# Map
 # =========================
 center = [
     df.geometry.representative_point().y.mean(),
@@ -257,7 +192,7 @@ center = [
 m = folium.Map(location=center, zoom_start=13, tiles="cartodbpositron")
 
 cmap = cm.LinearColormap(['green', 'yellow', 'orange', 'red'], vmin=0, vmax=1)
-cmap.caption = T["legend"]
+cmap.caption = "Disturbance Score (0–1)"
 
 folium.GeoJson(
     geojson_data,
@@ -269,14 +204,13 @@ folium.GeoJson(
     highlight_function=lambda f: {"weight": 6},
     tooltip=folium.GeoJsonTooltip(
         fields=["highway", "disturbance_label", "disturbance"],
-        aliases=(["Road", "Predicted Level", "Score"]
-                 if LANG == "English" else ["Route", "Niveau prédit", "Score"])
+        aliases=["Road", "Predicted Level", "Score"]
     ),
     name="Roads"
 ).add_to(m)
 cmap.add_to(m)
 
-st.caption(T["caption"])
+st.caption("Click a road segment to evaluate its perceived noise.")
 out = st_folium(m, height=600, use_container_width=True, returned_objects=["last_object_clicked"])
 
 # =========================
@@ -292,58 +226,28 @@ if out and out.get("last_object_clicked"):
     selected = df.loc[idx]
 
 # =========================
-# Local backup helpers (repo root: responses_backup.csv)
-# =========================
-BACKUP_CSV = "responses_backup.csv"
-COLUMNS = [
-    "timestamp","uuid","osmid","highway","pred_label","pred_score",
-    "agree","rating_1to5","comment","click_lat","click_lon","user_lat","user_lon"
-]
-
-def append_local_backup(row_dict: dict):
-    """Append to responses_backup.csv (create with header if missing)."""
-    file_exists = os.path.exists(BACKUP_CSV)
-    df_row = pd.DataFrame([row_dict], columns=COLUMNS)
-    if not file_exists:
-        df_row.to_csv(BACKUP_CSV, index=False)
-    else:
-        df_row.to_csv(BACKUP_CSV, mode="a", header=False, index=False)
-
-def load_backup_df() -> pd.DataFrame:
-    if os.path.exists(BACKUP_CSV):
-        try:
-            return pd.read_csv(BACKUP_CSV)
-        except Exception:
-            return pd.DataFrame(columns=COLUMNS)
-    return pd.DataFrame(columns=COLUMNS)
-
-# =========================
-# Survey form
+# Survey form (with 30s timeout + spinner + FR/EN normalize)
 # =========================
 if selected is not None:
-    st.subheader(T["subheader"])
+    st.subheader("Evaluate this segment")
     pred_label = str(selected.get('disturbance_label', ''))
     pred_score = float(selected.get('disturbance', 0.0))
     highway = str(selected.get('highway', ''))
 
-    st.write(T["road_model"].format(road=highway, label=pred_label, score=pred_score))
+    st.write(f"**Road:** {highway}  |  **Model prediction:** {pred_label} (score={pred_score:.2f})")
 
-    agree = st.radio(T["agree_q"], T["agree_opts"], horizontal=True)
-    rating = st.slider(T["rating_q"], 1, 5, 3)
-    comment = st.text_input(T["comment_q"])
-    with st.expander(T["gps_exp"]):
-        user_lat = st.text_input(T["lat"], "")
-        user_lon = st.text_input(T["lon"], "")
+    agree = st.radio("Do you agree with the prediction?", ["Yes", "No"], horizontal=True)
+    rating = st.slider("Your perception (1 = very quiet, 5 = very noisy)", 1, 5, 3)
+    comment = st.text_input("Optional comment (traffic, construction, etc.)")
+    with st.expander("Optional: share your GPS coordinates"):
+        user_lat = st.text_input("Latitude", "")
+        user_lon = st.text_input("Longitude", "")
 
-    if st.button(T["submit"]):
-        # Normalize FR Yes/No to EN
+    if st.button("Submit"):
+        # FR/EN normalize (in case someone types Oui/Non)
         agree_norm = {"Yes": "Yes", "No": "No", "Oui": "Yes", "Non": "No"}.get(agree, str(agree))
 
-        req_uuid = str(uuid.uuid4())
-        ts = datetime.utcnow().isoformat()
-
         payload = {
-            "uuid": req_uuid,
             "osmid": str(selected.get("osmid", "")),
             "highway": highway,
             "pred_label": pred_label,
@@ -357,49 +261,30 @@ if selected is not None:
             "user_lon": user_lon
         }
 
-        # 1) Always write local backup
-        local_row = {"timestamp": ts, **payload}
-        append_local_backup(local_row)
-
-        # 2) Try sending to Apps Script (timeout=30s)
-        try:
-            r = requests.post(
-                APPSCRIPT_URL,
-                params={"token": APPSCRIPT_TOKEN},
-                json=payload,
-                timeout=30
-            )
-            if r.ok:
-                try:
-                    resp = r.json()
-                except Exception:
-                    resp = {"status": "?", "raw": r.text[:200]}
-                if resp.get("status") == "ok":
-                    st.success(T["thanks_sheet"])
-                else:
-                    st.warning(f"{T['thanks_local']}  ({T['save_failed']}: {resp})")
+        with st.spinner("Saving..."):
+            try:
+                r = requests.post(
+                    APPSCRIPT_URL,
+                    params={"token": APPSCRIPT_TOKEN},
+                    json=payload,
+                    timeout=30  # <-- artırılmış süre
+                )
+            except Exception as e:
+                st.error(f"Connection error: {e}")
             else:
-                st.warning(T["thanks_local"] + "  " + T["http_err"].format(code=r.status_code, text=r.text[:200]))
-        except Exception as e:
-            st.warning(T["thanks_local"] + "  " + T["conn_err"].format(e=e))
+                if r.ok:
+                    try:
+                        resp = r.json()
+                    except Exception:
+                        resp = {"status": "?", "raw": r.text[:200]}
+                    if resp.get("status") == "ok":
+                        st.success("✅ Thanks! Your response has been saved.")
+                        # İsterseniz kanıt bilgisi (Apps Script'ten dönerse) gösterebilirsiniz:
+                        if resp.get("sheetName") and resp.get("wroteRow"):
+                            st.caption(f"Sheet: {resp['sheetName']} • Row: {resp['wroteRow']}")
+                    else:
+                        st.error(f"Save failed: {resp}")
+                else:
+                    st.error(f"HTTP {r.status_code}: {r.text[:200]}")
 else:
-    st.info(T["click_info"])
-
-# =========================
-# Backup table + download
-# =========================
-st.divider()
-st.subheader(T["backup_title"])
-backup_df = load_backup_df()
-st.dataframe(backup_df, use_container_width=True, height=300)
-
-if not backup_df.empty:
-    csv_bytes = backup_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label=T["download_csv"],
-        data=csv_bytes,
-        file_name="responses_backup.csv",
-        mime="text/csv"
-    )
-else:
-    st.caption(T["backup_empty"])
+    st.info("Click on the map to select a segment.")
