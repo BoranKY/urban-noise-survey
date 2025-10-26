@@ -16,29 +16,47 @@ st.set_page_config(page_title="Urban Noise Survey", layout="wide")
 st.title("🗺️ Urban Noise – Perception Survey")
 
 # =========================
-# Secrets guard
+#  Google Form ayarları
 # =========================
-def require_secret(key_name: str) -> str:
-    val = st.secrets.get(key_name)
-    if not val:
-        st.error(
-            f"Missing secret: {key_name}\n\n"
-            "Go to: Manage app → Settings → Secrets and add:\n"
-            'APPSCRIPT_URL = "https://script.google.com/macros/s/.../exec"\n'
-            'APPSCRIPT_TOKEN = "YOUR_SHARED_TOKEN"'
-        )
-        st.stop()
-    return val
+FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSeVqxIIMNZ4j3hvz6owNyD5C7g9KLr6y7vccZYCetImk0XHhA/formResponse"
 
-APPSCRIPT_URL = require_secret("APPSCRIPT_URL")
-APPSCRIPT_TOKEN = require_secret("APPSCRIPT_TOKEN")
+ENTRY_MAP = {
+    "osmid":       "entry.131606148",
+    "highway":     "entry.425157021",
+    "pred_label":  "entry.264773928",
+    "pred_score":  "entry.108563380",
+    "agree":       "entry.434809201",   # seçenek metni tam "Yes"/"No" olmalı
+    "rating_1to5": "entry.558617464",
+    "comment":     "entry.1491013630",
+    "click_lat":   "entry.873151532",
+    "click_lon":   "entry.1998137056",
+    "user_lat":    "entry.1204200612",
+    "user_lon":    "entry.1041474888",
+}
+
+def send_to_google_form(payload: dict, timeout: int = 20):
+    """Google Form'a POST atar. 200 veya 302 başarılı kabul edilir."""
+    data = {
+        ENTRY_MAP["osmid"]:       str(payload.get("osmid","")),
+        ENTRY_MAP["highway"]:     str(payload.get("highway","")),
+        ENTRY_MAP["pred_label"]:  str(payload.get("pred_label","")),
+        ENTRY_MAP["pred_score"]:  str(payload.get("pred_score","")),
+        ENTRY_MAP["agree"]:       str(payload.get("agree","")),
+        ENTRY_MAP["rating_1to5"]: str(payload.get("rating_1to5","")),
+        ENTRY_MAP["comment"]:     str(payload.get("comment","")),
+        ENTRY_MAP["click_lat"]:   str(payload.get("click_lat","")),
+        ENTRY_MAP["click_lon"]:   str(payload.get("click_lon","")),
+        ENTRY_MAP["user_lat"]:    str(payload.get("user_lat","")),
+        ENTRY_MAP["user_lon"]:    str(payload.get("user_lon","")),
+    }
+    r = requests.post(FORM_URL, data=data, timeout=timeout)
+    return r.status_code in (200, 302), r.status_code, r.text[:200]
 
 # =========================
 # Data loader (robust .geojson + .geojson.gz)
 # =========================
 @st.cache_data
 def load_data(path: str) -> gpd.GeoDataFrame:
-    # 0) Exists?
     if not os.path.exists(path):
         try:
             listing = os.listdir("data")
@@ -51,22 +69,19 @@ def load_data(path: str) -> gpd.GeoDataFrame:
         )
         st.stop()
 
-    # 1) LFS pointer check
+    # LFS pointer kontrolü
     try:
         with open(path, "rb") as f:
             head = f.read(64)
         if head.startswith(b"version https://git-lfs.github.com/spec"):
             st.error(
                 "⚠️ The file seems to be a Git LFS pointer, not the actual GeoJSON.\n\n"
-                "Fix options:\n"
-                "• Commit a simplified & gzipped file under 25MB without LFS (e.g., roads_wgs.geojson.gz), or\n"
-                "• Host the file externally (Drive / GitHub Release) and download at runtime."
+                "Fix: commit a simplified gzipped file under 25MB (roads_wgs.geojson.gz)."
             )
             st.stop()
     except Exception:
         pass
 
-    # 2) Read
     try:
         if path.endswith(".geojson.gz"):
             with gzip.open(path, "rt", encoding="utf-8") as f:
@@ -82,7 +97,7 @@ def load_data(path: str) -> gpd.GeoDataFrame:
         st.error(f"❌ Failed to read geo data: {path}\n\n{e}")
         st.stop()
 
-    # 3) Disturbance + label
+    # disturbance + label
     gdf["disturbance"] = pd.to_numeric(gdf.get("disturbance"), errors="coerce")
     if "disturbance_label" not in gdf.columns:
         bins = [0, 0.33, 0.66, 1]
@@ -93,11 +108,8 @@ def load_data(path: str) -> gpd.GeoDataFrame:
         )
     return gdf
 
-# >>> set your file path here (use .gz if you committed gzipped)
 DF_PATH = "data/roads_wgs.geojson.gz"
 df = load_data(DF_PATH)
-# If you committed plain GeoJSON:
-# df = load_data("data/roads_wgs.geojson")
 
 # =========================
 # Clean geometries
@@ -105,64 +117,35 @@ df = load_data(DF_PATH)
 df = df[df.geometry.notna()].copy()
 if hasattr(df.geometry, "is_empty"):
     df = df[~df.geometry.is_empty].copy()
-
-# Keep only linear features
 df = df[df.geometry.geom_type.isin(["LineString", "MultiLineString"])].copy()
-
-# Explode multilines
 df = df.explode(index_parts=False, ignore_index=True)
-
-# Disturbance → numeric [0,1]
 df["disturbance"] = pd.to_numeric(df["disturbance"], errors="coerce").fillna(0.0).clip(0, 1)
-
-# Label fallback
 if "disturbance_label" not in df.columns:
     bins = [0, 0.33, 0.66, 1]
-    df["disturbance_label"] = pd.cut(
-        df["disturbance"], bins=bins,
-        labels=["Low", "Medium", "High"],
-        include_lowest=True
-    )
-
+    df["disturbance_label"] = pd.cut(df["disturbance"], bins=bins,
+                                     labels=["Low", "Medium", "High"], include_lowest=True)
 if len(df) == 0:
     st.error("No line features to display after cleaning. Check your input data.")
     st.stop()
 
 # =========================
-# Build GeoJSON manually (NumPy 2.x-safe)
+# Build GeoJSON manually
 # =========================
 def to_py(obj):
-    """JSON-serializable primitive converter for GeoJSON properties."""
-    # numpy scalar → python scalar
     if isinstance(obj, np.generic):
         obj = obj.item()
-
-    # datetime types → ISO
     if isinstance(obj, (pd.Timestamp, datetime)):
         return obj.isoformat()
-
-    # pandas interval, etc. → string
-    if isinstance(obj, (pd.Interval,)):
-        return str(obj)
-
-    # arrays/lists → recursive
-    if isinstance(obj, (list, tuple, np.ndarray)):
-        return [to_py(x) for x in obj]
-
-    # NaN/NA safe check
     try:
         if pd.isna(obj):
             return None
     except Exception:
         pass
-
-    # objects with tolist (e.g., pandas scalar types)
     if hasattr(obj, "tolist") and not isinstance(obj, (str, bytes)):
         try:
             return obj.tolist()
         except Exception:
             pass
-
     return obj
 
 def build_geojson(gdf: gpd.GeoDataFrame) -> dict:
@@ -172,12 +155,11 @@ def build_geojson(gdf: gpd.GeoDataFrame) -> dict:
         geom = row.geometry
         if geom is None:
             continue
-        feat = {
+        features.append({
             "type": "Feature",
             "geometry": mapping(geom),
             "properties": {col: to_py(row[col]) for col in props_cols}
-        }
-        features.append(feat)
+        })
     return {"type": "FeatureCollection", "features": features}
 
 geojson_data = build_geojson(df)
@@ -226,7 +208,7 @@ if out and out.get("last_object_clicked"):
     selected = df.loc[idx]
 
 # =========================
-# Survey form
+# Survey form -> Google Form'a gönder
 # =========================
 if selected is not None:
     st.subheader("Evaluate this segment")
@@ -249,7 +231,7 @@ if selected is not None:
             "highway": highway,
             "pred_label": pred_label,
             "pred_score": pred_score,
-            "agree": agree,
+            "agree": agree,                # Formdaki seçenek metniyle aynı olmalı
             "rating_1to5": int(rating),
             "comment": comment,
             "click_lat": float(lat),
@@ -257,25 +239,11 @@ if selected is not None:
             "user_lat": user_lat,
             "user_lon": user_lon
         }
-        try:
-            r = requests.post(
-                APPSCRIPT_URL,
-                params={"token": APPSCRIPT_TOKEN},
-                json=payload,
-                timeout=10
-            )
-            if r.ok:
-                try:
-                    resp = r.json()
-                except Exception:
-                    resp = {"status": "?", "raw": r.text[:200]}
-                if resp.get("status") == "ok":
-                    st.success("✅ Thanks! Your response has been saved.")
-                else:
-                    st.error(f"Save failed: {resp}")
-            else:
-                st.error(f"HTTP {r.status_code}: {r.text[:200]}")
-        except Exception as e:
-            st.error(f"Connection error: {e}")
+        with st.spinner("Sending to Google Form..."):
+            ok, code, preview = send_to_google_form(payload, timeout=20)
+        if ok:
+            st.success("✅ Submitted! Check the Form responses (and linked Sheet).")
+        else:
+            st.warning(f"Response code: {code}. Check FORM_URL & ENTRY_MAP.")
 else:
     st.info("Click on the map to select a segment.")
