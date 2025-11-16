@@ -40,7 +40,7 @@ st.markdown("""
 - (Optional) **Add a short note** (e.g., “road works”, “rush hour”).  
 - **Submit** your answer.
 
-**Important:** After each **click** or **submit**, the page may take **5–6 seconds** to process.  
+**Important:** Loading the map can take a bit. Hang tight for a few seconds. .After each **click** or **submit**, the page may take **5–6 seconds** to process.  
 Please **stay on this page** until you see the confirmation message.
 
 **Privacy:** We only store your answer and the clicked map location — no name or email.
