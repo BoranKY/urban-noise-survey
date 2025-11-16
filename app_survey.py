@@ -9,11 +9,36 @@ import streamlit as st
 import folium
 from shapely.geometry import Point, mapping
 from streamlit_folium import st_folium
-import branca.colormap as cm
 from datetime import datetime
 
-st.set_page_config(page_title="Urban Noise Survey", layout="wide")
-st.title("🗺️ Urban Noise – Perception Survey")
+# (Opsiyonel) Tarayıcıdan konum alma – paket yoksa sorun değil (NaN gönderir)
+try:
+    from streamlit_js_eval import get_geolocation
+    HAS_JS_GEO = True
+except Exception:
+    HAS_JS_GEO = False
+
+# =========================
+#  Sayfa ve başlık
+# =========================
+st.set_page_config(page_title="How Noisy Is This Street?", layout="wide")
+st.title("How Noisy Is This Street?")
+
+st.markdown("""
+**Help us map where streets feel quiet or noisy.** Your feedback improves walking and cycling routes.
+
+**How it works (takes ~1 minute):**
+- **Zoom** to your area on the map.  
+- **Click** a street you know.  
+- **Rate the noise** you feel: **1 = very quiet … 5 = very noisy**.  
+- (Optional) **Add a short note** (e.g., “road works”, “rush hour”).  
+- **Submit** your answer.
+
+**Important:** After each **click** or **submit**, the page may take **5–6 seconds** to process.  
+Please **stay on this page** until you see the confirmation message.
+
+**Privacy:** We only store your answer and the clicked map location — no name or email.
+""")
 
 # =========================
 #  Google Form ayarları
@@ -25,7 +50,7 @@ ENTRY_MAP = {
     "highway":     "entry.425157021",
     "pred_label":  "entry.264773928",
     "pred_score":  "entry.108563380",
-    "agree":       "entry.434809201",   # seçenek metni tam "Yes"/"No" olmalı
+    "agree":       "entry.434809201",   # bu alana "NaN" göndereceğiz
     "rating_1to5": "entry.558617464",
     "comment":     "entry.1491013630",
     "click_lat":   "entry.873151532",
@@ -53,7 +78,7 @@ def send_to_google_form(payload: dict, timeout: int = 20):
     return r.status_code in (200, 302), r.status_code, r.text[:200]
 
 # =========================
-# Data loader (robust .geojson + .geojson.gz)
+# Data loader (.geojson/.geojson.gz destekli)
 # =========================
 @st.cache_data
 def load_data(path: str) -> gpd.GeoDataFrame:
@@ -97,7 +122,6 @@ def load_data(path: str) -> gpd.GeoDataFrame:
         st.error(f"❌ Failed to read geo data: {path}\n\n{e}")
         st.stop()
 
-    # disturbance + label
     gdf["disturbance"] = pd.to_numeric(gdf.get("disturbance"), errors="coerce")
     if "disturbance_label" not in gdf.columns:
         bins = [0, 0.33, 0.66, 1]
@@ -112,7 +136,7 @@ DF_PATH = "data/roads_wgs.geojson.gz"
 df = load_data(DF_PATH)
 
 # =========================
-# Clean geometries
+# Geometry temizliği
 # =========================
 df = df[df.geometry.notna()].copy()
 if hasattr(df.geometry, "is_empty"):
@@ -129,7 +153,7 @@ if len(df) == 0:
     st.stop()
 
 # =========================
-# Build GeoJSON manually
+# GeoJSON (manuel) – Folium için
 # =========================
 def to_py(obj):
     if isinstance(obj, np.generic):
@@ -165,7 +189,7 @@ def build_geojson(gdf: gpd.GeoDataFrame) -> dict:
 geojson_data = build_geojson(df)
 
 # =========================
-# Map
+# Harita (legend ve tooltip olmadan)
 # =========================
 center = [
     df.geometry.representative_point().y.mean(),
@@ -173,30 +197,27 @@ center = [
 ]
 m = folium.Map(location=center, zoom_start=13, tiles="cartodbpositron")
 
-cmap = cm.LinearColormap(['green', 'yellow', 'orange', 'red'], vmin=0, vmax=1)
-cmap.caption = "Disturbance Score (0–1)"
+# renk paletini kullanıyoruz ama legend'i eklemiyoruz
+from branca.colormap import LinearColormap
+cmap = LinearColormap(['green', 'yellow', 'orange', 'red'], vmin=0, vmax=1)
 
 folium.GeoJson(
     geojson_data,
     style_function=lambda f: {
         "color": cmap(float(f["properties"].get("disturbance", 0))),
-        "weight": 3,
-        "opacity": 1.0
+        "weight": 3 if float(f["properties"].get("disturbance", 0)) < 0.7 else 4,
+        "opacity": 0.9 if float(f["properties"].get("disturbance", 0)) >= 0.33 else 0.6
     },
     highlight_function=lambda f: {"weight": 6},
-    tooltip=folium.GeoJsonTooltip(
-        fields=["highway", "disturbance_label", "disturbance"],
-        aliases=["Road", "Predicted Level", "Score"]
-    ),
+    # tooltip VERMIYORUZ -> teknik alanlar gizli
     name="Roads"
 ).add_to(m)
-cmap.add_to(m)
 
-st.caption("Click a road segment to evaluate its perceived noise.")
+st.caption("Click a street line, rate the noise, and submit. (Processing may take 5–6 seconds.)")
 out = st_folium(m, height=600, use_container_width=True, returned_objects=["last_object_clicked"])
 
 # =========================
-# Selection (nearest segment to click)
+# Seçim (tıklanan yere en yakın segment)
 # =========================
 selected = None
 lat = lon = None
@@ -207,43 +228,49 @@ if out and out.get("last_object_clicked"):
     idx = df.distance(clicked_pt.iloc[0]).sort_values().index[0]
     selected = df.loc[idx]
 
+# Tarayıcıdan kullanıcı konumu (opsiyonel, izin varsa)
+user_lat = user_lon = ""
+if HAS_JS_GEO:
+    try:
+        loc = get_geolocation()
+        if loc and loc.get("coords"):
+            user_lat = str(loc["coords"]["latitude"])
+            user_lon = str(loc["coords"]["longitude"])
+    except Exception:
+        pass
+
 # =========================
-# Survey form -> Google Form'a gönder
+# Form -> Google Form'a gönder (yalnızca slider + optional comment)
 # =========================
 if selected is not None:
-    st.subheader("Evaluate this segment")
+    st.subheader("Rate this street")
     pred_label = str(selected.get('disturbance_label', ''))
     pred_score = float(selected.get('disturbance', 0.0))
     highway = str(selected.get('highway', ''))
 
-    st.write(f"**Road:** {highway}  |  **Model prediction:** {pred_label} (score={pred_score:.2f})")
-
-    agree = st.radio("Do you agree with the prediction?", ["Yes", "No"], horizontal=True)
-    rating = st.slider("Your perception (1 = very quiet, 5 = very noisy)", 1, 5, 3)
+    # Yalnızca slider + comment
+    rating = st.slider("How noisy does this street feel? (1 = very quiet, 5 = very noisy)", 1, 5, 3)
     comment = st.text_input("Optional comment (traffic, construction, etc.)")
-    with st.expander("Optional: share your GPS coordinates"):
-        user_lat = st.text_input("Latitude", "")
-        user_lon = st.text_input("Longitude", "")
 
     if st.button("Submit"):
         payload = {
             "osmid": str(selected.get("osmid", "")),
             "highway": highway,
-            "pred_label": pred_label,
-            "pred_score": pred_score,
-            "agree": agree,                # Formdaki seçenek metniyle aynı olmalı
+            "pred_label": pred_label,         # arka planda kaydediyoruz
+            "pred_score": pred_score,         # arka planda kaydediyoruz
+            "agree": "NaN",                   # UI yok; NaN stringi gönder
             "rating_1to5": int(rating),
             "comment": comment,
             "click_lat": float(lat),
             "click_lon": float(lon),
-            "user_lat": user_lat,
+            "user_lat": user_lat,             # alınabildiyse otomatik, yoksa boş
             "user_lon": user_lon
         }
-        with st.spinner("Sending to Google Form..."):
-            ok, code, preview = send_to_google_form(payload, timeout=20)
+        with st.spinner("Submitting… please wait ~5–6 seconds"):
+            ok, code, preview = send_to_google_form(payload, timeout=25)
         if ok:
-            st.success("✅ Submitted! Check the Form responses (and linked Sheet).")
+            st.success("✅ Thanks! Your response has been saved.")
         else:
-            st.warning(f"Response code: {code}. Check FORM_URL & ENTRY_MAP.")
+            st.warning(f"Submission issue (HTTP {code}). Please try again.")
 else:
-    st.info("Click on the map to select a segment.")
+    st.info("Click on the map to select a street.")
