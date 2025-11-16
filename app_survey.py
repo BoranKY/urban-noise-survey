@@ -285,7 +285,7 @@ else:
             "user_lon": user_lon
         }
         with st.spinner("Submitting… please wait ~5–6 seconds"):
-            ok, code, preview = send_to_google_form(payload, timeout=25)
+            ok, code, preview = send_to_google_form(payload, timeout=20)
         if ok:
             st.sidebar.success("✅ Thanks! Your response has been saved.")
         else:
