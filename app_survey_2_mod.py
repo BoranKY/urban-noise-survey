@@ -192,10 +192,13 @@ def get_geojson_data(path: str) -> dict:
 
 # Spatial index (nearest search) - cache as resource
 @st.cache_resource
-def get_sindex(gdf: gpd.GeoDataFrame):
-    """Create a spatial index for fast nearest-segment queries."""
+def get_sindex(_gdf: gpd.GeoDataFrame):
+    """Create a spatial index for fast nearest-segment queries.
+
+    _gdf is prefixed with underscore so Streamlit doesn't try to hash it.
+    """
     try:
-        return gdf.sindex
+        return _gdf.sindex
     except Exception:
         return None
 
@@ -247,16 +250,18 @@ if out and out.get("last_object_clicked"):
     # Prefer spatial index (fast), fall back to distance if something goes wrong
     if sindex is not None:
         try:
-            # shapely/pygeos backend: returns array([[input_idx], [tree_idx]])
+            # shapely/pygeos backend: returns indices
             nearest_idx = sindex.nearest(click_geom, return_all=False)
+
             # defensive: handle different shapes/backends
             tree_idx = None
             if hasattr(nearest_idx, "shape") and nearest_idx.shape[0] == 2:
                 tree_idx = int(nearest_idx[1][0])
             else:
-                # rtree-style or generator
+                # rtree-style or 1D array / iterable
                 idx_list = list(nearest_idx)
                 tree_idx = int(idx_list[0])
+
             selected = df.iloc[tree_idx]
         except Exception:
             # fallback: brute-force distance (slower)
