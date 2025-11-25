@@ -132,7 +132,7 @@ def load_data(path: str) -> gpd.GeoDataFrame:
         st.error(f"❌ Failed to read geo data: {path}\n\n{e}")
         st.stop()
 
-    # --- Geometry cleaning (once, then cached) ---
+    # --- Geometry cleaning (moved buraya, bir kez çalışsın diye) ---
     gdf = gdf[gdf.geometry.notna()].copy()
     if hasattr(gdf.geometry, "is_empty"):
         gdf = gdf[~gdf.geometry.is_empty].copy()
@@ -174,11 +174,12 @@ def to_py(obj):
     return obj
 
 @st.cache_data
-def get_geojson_data(_gdf: gpd.GeoDataFrame) -> dict:
+def get_geojson_data(path: str) -> dict:
     """Build GeoJSON dict for Folium from the cached GeoDataFrame."""
-    props_cols = [c for c in _gdf.columns if c != _gdf.geometry.name]
+    gdf = load_data(path)
+    props_cols = [c for c in gdf.columns if c != gdf.geometry.name]
     features = []
-    for _, row in _gdf.iterrows():
+    for _, row in gdf.iterrows():
         geom = row.geometry
         if geom is None:
             continue
@@ -206,24 +207,16 @@ def get_sindex(_gdf: gpd.GeoDataFrame):
 # =========================
 DF_PATH = "data/roads_wgs.geojson.gz"  # gerekirse burada dosya adını değiştir
 df = load_data(DF_PATH)
-geojson_data = get_geojson_data(df)
+geojson_data = get_geojson_data(DF_PATH)
 sindex = get_sindex(df)
 
 # =========================
 # Map (no legend, no tooltip)
 # =========================
-
-# Hafif bir merkez hesabı: ilk geometrinin ilk noktasını kullan
-try:
-    first_geom = df.geometry.iloc[0]
-    if hasattr(first_geom, "coords"):
-        x0, y0 = list(first_geom.coords)[0]
-        center = [y0, x0]
-    else:
-        center = [46.8, 7.15]  # İstersen burayı şehrinin merkezine göre değiştir
-except Exception:
-    center = [46.8, 7.15]
-
+center = [
+    df.geometry.representative_point().y.mean(),
+    df.geometry.representative_point().x.mean()
+]
 m = folium.Map(location=center, zoom_start=13, tiles="cartodbpositron")
 
 from branca.colormap import LinearColormap
@@ -257,18 +250,20 @@ if out and out.get("last_object_clicked"):
     # Prefer spatial index (fast), fall back to distance if something goes wrong
     if sindex is not None:
         try:
+            # shapely/pygeos backend: returns array([[input_idx], [tree_idx]])
             nearest_idx = sindex.nearest(click_geom, return_all=False)
-
             # defensive: handle different shapes/backends
             tree_idx = None
             if hasattr(nearest_idx, "shape") and nearest_idx.shape[0] == 2:
                 tree_idx = int(nearest_idx[1][0])
             else:
+                # rtree-style or 1D array / iterable
                 idx_list = list(nearest_idx)
                 tree_idx = int(idx_list[0])
 
             selected = df.iloc[tree_idx]
         except Exception:
+            # fallback: brute-force distance (slower)
             distances = df.distance(click_geom)
             idx = distances.sort_values().index[0]
             selected = df.loc[idx]
