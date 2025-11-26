@@ -206,7 +206,7 @@ def get_sindex(_gdf: gpd.GeoDataFrame):
 #  Load data (cached)
 # =========================
 # Küçük Fribourg bbox dosyan
-DF_PATH = "data/roads_wgs_fribourg_bbox.geojson.gz"
+DF_PATH = "data/roads_wgs_fribourg_bbox.geojson"
 
 df = load_data(DF_PATH)
 geojson_data = get_geojson_data(DF_PATH)
