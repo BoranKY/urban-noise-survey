@@ -99,7 +99,7 @@ def load_data(path: str) -> gpd.GeoDataFrame:
         st.error(
             f"Data file not found: {path}\n\n"
             f"Available in ./data: {listing}\n"
-            f"Tip: If you committed roads_wgs.geojson.gz, call load_data('data/roads_wgs.geojson.gz')."
+            f"Tip: Put your file under ./data and update DF_PATH."
         )
         st.stop()
 
@@ -110,26 +110,37 @@ def load_data(path: str) -> gpd.GeoDataFrame:
         if head.startswith(b"version https://git-lfs.github.com/spec"):
             st.error(
                 "⚠️ The file seems to be a Git LFS pointer, not the actual GeoJSON.\n\n"
-                "Fix: commit a simplified gzipped file under 25MB."
+                "Fix: commit a simplified GeoJSON or gzipped GeoJSON under 25MB."
             )
             st.stop()
     except Exception:
         pass
 
-    # Read file
+    # Read file WITHOUT using geopandas.read_file/fiona
     try:
         if path.endswith(".geojson.gz"):
+            # gzipped GeoJSON
             with gzip.open(path, "rt", encoding="utf-8") as f:
                 data = json.load(f)
-            gdf = gpd.GeoDataFrame.from_features(data["features"])
-            if gdf.crs is None:
-                gdf.set_crs(4326, inplace=True)
-            else:
-                gdf = gdf.to_crs(4326)
         else:
-            gdf = gpd.read_file(path).to_crs(4326)
+            # normal .geojson
+            with open(path, "rt", encoding="utf-8") as f:
+                data = json.load(f)
+
+        # Expect FeatureCollection
+        if isinstance(data, dict) and "features" in data:
+            gdf = gpd.GeoDataFrame.from_features(data["features"])
+        else:
+            st.error("❌ File is not a valid GeoJSON FeatureCollection.")
+            st.stop()
+
+        if gdf.crs is None:
+            gdf.set_crs(4326, inplace=True)
+        else:
+            gdf = gdf.to_crs(4326)
+
     except Exception as e:
-        st.error(f"❌ Failed to read geo data: {path}\n\n{e}")
+        st.error(f"❌ Failed to read geo data as GeoJSON: {path}\n\n{e}")
         st.stop()
 
     # --- Geometry cleaning (once, then cached) ---
@@ -205,7 +216,7 @@ def get_sindex(_gdf: gpd.GeoDataFrame):
 # =========================
 #  Load data (cached)
 # =========================
-# Küçük Fribourg bbox dosyan
+# Küçük Fribourg bbox dosyan (.geojson)
 DF_PATH = "data/roads_wgs_fribourg_bbox.geojson"
 
 df = load_data(DF_PATH)
@@ -252,20 +263,18 @@ if out and out.get("last_object_clicked"):
     # Prefer spatial index (fast), fall back to distance if something goes wrong
     if sindex is not None:
         try:
-            # shapely/pygeos backend: returns array([[input_idx], [tree_idx]])
             nearest_idx = sindex.nearest(click_geom, return_all=False)
+
             # defensive: handle different shapes/backends
             tree_idx = None
             if hasattr(nearest_idx, "shape") and nearest_idx.shape[0] == 2:
                 tree_idx = int(nearest_idx[1][0])
             else:
-                # rtree-style or 1D array / iterable
                 idx_list = list(nearest_idx)
                 tree_idx = int(idx_list[0])
 
             selected = df.iloc[tree_idx]
         except Exception:
-            # fallback: brute-force distance (slower)
             distances = df.distance(click_geom)
             idx = distances.sort_values().index[0]
             selected = df.loc[idx]
