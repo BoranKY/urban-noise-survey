@@ -110,7 +110,7 @@ def load_data(path: str) -> gpd.GeoDataFrame:
         if head.startswith(b"version https://git-lfs.github.com/spec"):
             st.error(
                 "⚠️ The file seems to be a Git LFS pointer, not the actual GeoJSON.\n\n"
-                "Fix: commit a simplified gzipped file under 25MB (roads_wgs.geojson.gz)."
+                "Fix: commit a simplified gzipped file under 25MB."
             )
             st.stop()
     except Exception:
@@ -132,7 +132,7 @@ def load_data(path: str) -> gpd.GeoDataFrame:
         st.error(f"❌ Failed to read geo data: {path}\n\n{e}")
         st.stop()
 
-    # --- Geometry cleaning (moved buraya, bir kez çalışsın diye) ---
+    # --- Geometry cleaning (once, then cached) ---
     gdf = gdf[gdf.geometry.notna()].copy()
     if hasattr(gdf.geometry, "is_empty"):
         gdf = gdf[~gdf.geometry.is_empty].copy()
@@ -205,7 +205,9 @@ def get_sindex(_gdf: gpd.GeoDataFrame):
 # =========================
 #  Load data (cached)
 # =========================
-DF_PATH = "data/roads_wgs.geojson.gz"  # gerekirse burada dosya adını değiştir
+# Küçük Fribourg bbox dosyan
+DF_PATH = "data/roads_wgs_fribourg_bbox.geojson.gz"
+
 df = load_data(DF_PATH)
 geojson_data = get_geojson_data(DF_PATH)
 sindex = get_sindex(df)
